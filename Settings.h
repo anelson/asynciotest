@@ -15,6 +15,12 @@ typedef enum {
 	Disk
 } Operation;
 
+typedef enum {
+	RawDisk,
+	Snapshot,
+	File
+} DiskSource;
+
 	
 #define DEFAULT_OUTSTANDING_OP_LENGTH 4
 #define DEFAULT_CHUNK_SIZE 262144 //256k
@@ -33,6 +39,7 @@ public:
 		m_opLength = DEFAULT_OUTSTANDING_OP_LENGTH;
 		m_tcpBufSize = 65535;
 		m_useTransmitFunc = false;
+		m_diskReadSource = File;
 	}
 
 	~Settings(void)
@@ -42,7 +49,7 @@ public:
 	bool ParseCommandLine(int argc, TCHAR* argv[]) {
 		int c;
 
-		while ((c = getopt(argc, argv, _T("c:sf:p:ndl:k:o:b:t"))) != EOF) {
+		while ((c = getopt(argc, argv, _T("c:sa:v:f:p:ndl:k:o:b:t"))) != EOF) {
 			switch (c) {
 			case _T('c'):
 				m_mode = Client;
@@ -53,7 +60,18 @@ public:
 				m_mode = Server;
 				break;
 
+			case _T('a'):
+				m_diskReadSource = Snapshot;
+				m_sourceFile = optarg;
+				break;
+
+			case _T('v'):
+				m_diskReadSource = RawDisk;
+				m_sourceFile = optarg;
+				break;
+
 			case _T('f'):
+				m_diskReadSource = File;
 				m_sourceFile = optarg;
 				break;
 
@@ -155,6 +173,7 @@ public:
   Hostname: %s\n\
   Port: %d\n\
   Filename: %s\n\
+  Disk I/O Source: %s\n\
   Chunk size: %d\n\
   Op Count: %d\n\
   Data length: %d\n\
@@ -165,6 +184,7 @@ public:
 		m_targetHost.c_str(),
 		m_port,
 		m_sourceFile.c_str(),
+		m_diskReadSource == File ? _T("Filesystem file") : (m_diskReadSource == RawDisk ? _T("Raw Disk") : _T("VSS Disk Snapshot")),
 		m_chunkSize,
 		m_opLength,
 		m_dataLength,
@@ -180,6 +200,8 @@ Options:\n\
   -s - Run in server mode, waiting for connections\n\
   -p port - Connect (client) or listen (server) on this port.  Default 12345\n\
   -f file - The file to send to the server. Required unless -n or -s specified.\n\
+  -a volume - Volume to snapshot and send to the server. Required unless -n or -s specified.\n\
+  -v volume - Volume to read and send to the server. Required unless -n or -s specified.\n\
   -n - Run in network only mode;do not read (client) or write (server) the disk\n\
   -d - Run in disk only mode;do not write (client) or read (server) the network\n\
   -k chunksize[k|m|g|K|M|G] - The size of chunks to read and write with\n\
@@ -193,6 +215,7 @@ Options:\n\
 
 	Mode getMode() {return m_mode;}
 	Operation getOperation() {return m_op;}
+	DiskSource getDiskReadSource() {return m_diskReadSource;}
 	const tstring& getTargetHost() {return m_targetHost;}
 	const tstring& getSourceFile() {return m_sourceFile;}
 	UINT32 getPort() {return m_port;}
@@ -205,6 +228,7 @@ Options:\n\
 private:
 	Mode m_mode;
 	Operation m_op;
+	DiskSource m_diskReadSource;
 	tstring m_targetHost;
 	tstring m_sourceFile;
 	UINT32 m_port;

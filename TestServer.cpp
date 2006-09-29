@@ -35,7 +35,7 @@ void TestServer::Run() {
 		} else {
 			//Pretend the network has already the entire chunk size, to facilitate
 			//IO-only testing
-			m_dwTotalBytesRead = m_settings.getDataLength();
+			m_totalBytesRead = m_settings.getDataLength();
 		}
 
 		if (IncludeFileTest()) {
@@ -97,15 +97,15 @@ void TestServer::Run() {
 		_tprintf(_T("Total transfer wall clock time: %0.2lf seconds\n"), (finish - start).Seconds());
 		if (IncludeNetworkTest()) {
 			_tprintf(_T("Read %0.2lf 10^6 bytes\n"), 
-				static_cast<double>(m_dwTotalBytesRead) / 1000000);
+				static_cast<double>(m_totalBytesRead) / 1000000);
 		}
 		if (IncludeFileTest()) {
 			_tprintf(_T("Wrote %0.2lf 10^6 bytes\n"),
-				static_cast<double>(m_dwTotalBytesWritten) / 1000000);
+				static_cast<double>(m_totalBytesWritten) / 1000000);
 		}
 		_tprintf(_T("Total throughput: %0.2lf 10^6 Bytes/second (%0.2lf 10^6 bits/second)\n"),
-			(static_cast<double>(MAX(m_dwTotalBytesRead, m_dwTotalBytesWritten)) / 1000000) / (finish - start).Seconds(),
-			(static_cast<double>(MAX(m_dwTotalBytesRead, m_dwTotalBytesWritten)) / 1000000 * 8) / (finish - start).Seconds());
+			(static_cast<double>(MAX(m_totalBytesRead, m_totalBytesWritten)) / 1000000) / (finish - start).Seconds(),
+			(static_cast<double>(MAX(m_totalBytesRead, m_totalBytesWritten)) / 1000000 * 8) / (finish - start).Seconds());
 
 
 		Cleanup();
@@ -227,9 +227,9 @@ bool TestServer::PostInitialWrites() {
 bool TestServer::ProcessSocketRead(AsyncIo* io) {
 	//Write to file
 	m_outstandingReads--;
-	m_dwTotalBytesRead += io->m_dwBytesXfered;
+	m_totalBytesRead += io->m_dwBytesXfered;
 
-	Logger::Debug2(_T("Finished socket read; %d bytes read now; %d total"), io->m_dwBytesXfered, m_dwTotalBytesRead);
+	Logger::Debug2(_T("Finished socket read; %d bytes read now; %I64d total"), io->m_dwBytesXfered, m_totalBytesRead);
 
 	if (io->m_dwBytesXfered == 0) {
 		//zero-byte read indicates the client has closed the connection
@@ -263,11 +263,11 @@ bool TestServer::ProcessSocketRead(AsyncIo* io) {
 
 bool TestServer::ProcessFileWrite(AsyncIo* io) {
 	m_outstandingWrites--;
-	m_dwTotalBytesWritten += io->m_dwBytesXfered;
+	m_totalBytesWritten += io->m_dwBytesXfered;
 
-	Logger::Debug2(_T("Finished file write; %d bytes written now; %d total"), 
+	Logger::Debug2(_T("Finished file write; %d bytes written now; %I64d total"), 
 		io->m_dwBytesXfered,
-		m_dwTotalBytesWritten);
+		m_totalBytesWritten);
 
 	if (!IncludeNetworkTest()) {
 		//This is an IO-only test, so writes aren't posted as a result of socket

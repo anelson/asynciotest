@@ -33,6 +33,6 @@ private:
 		return !IncludeNetworkTest() || (m_clientSocket == INVALID_SOCKET);
 	}
 	bool IsFileDone() {
-		return !IncludeFileTest() || (m_dwTotalBytesWritten >= m_dwTotalBytesRead);
+		return !IncludeFileTest() || (m_totalBytesWritten >= m_totalBytesRead);
 	}
 };

@@ -1,20 +1,62 @@
 #include "StdAfx.h"
-#include "TestClient.h"
 
 #include <stdio.h>
+
+#include <algorithm>
+
+#include "TestClient.h"
+
+typedef struct _RTL_BITMAP {
+    ULONG SizeOfBitMap;                     // Number of bits in bit map
+    PULONG Buffer;                          // Pointer to the bit map itself
+} RTL_BITMAP, *PRTL_BITMAP;
+
+extern "C" {
+VOID
+WINAPI
+RtlInitializeBitMap (
+    PRTL_BITMAP BitMapHeader,
+    PULONG BitMapBuffer,
+    ULONG SizeOfBitMap
+    );
+
+BOOLEAN
+WINAPI
+RtlAreBitsClear (
+    PRTL_BITMAP BitMapHeader,
+    ULONG StartingIndex,
+    ULONG Length
+    );
+}
+
 
 #define COOKIE_FILE_READ	1
 #define COOKIE_SOCKET_WRITE 2
 #define COOKIE_TRANSMIT_FILE 3
 
+// Stolen from Wangdera Hobocopy, http://wangdera.sourceforge.net/
+#define CHECK_HRESULT(funcname, x) \
+{ \
+	Logger::Debug2(_T("Calling %s"), funcname); \
+	HRESULT ckhr = ((x)); \
+	if (FAILED(ckhr)) { \
+		Logger::ErrorWin32(ckhr, _T("%s failed"), funcname); \
+		return false; \
+	} \
+}
+
+
+
 TestClient::TestClient(Settings& settings) : IoController(settings)
 {
 	m_file = INVALID_HANDLE_VALUE;
 	m_socket = 0;
-	m_dwFileSize = 0;
-	m_dwNextReadOffset = 0;
-	m_dwTotalBytesQueuedForWrite = 0;
+	m_fileSize = 0;
+	m_nextReadOffset = 0;
+	m_totalBytesQueuedForWrite = 0;
 	m_pfnTransmitPackets = NULL;
+	m_srcVolumeBitmap = NULL;
+	m_totalClusters = m_freeClusters = m_bytesPerCluster = 0;
 }
 
 TestClient::~TestClient(void)
@@ -28,6 +70,15 @@ TestClient::~TestClient(void)
 		::CloseHandle(m_file);
 		m_file = INVALID_HANDLE_VALUE;
 	}
+
+	if (IncludeFileTest() && UseSnapshotForFileTest()) {
+		DeleteDiskSnapshot();
+	}
+
+	if (m_srcVolumeBitmap) {
+		delete[] m_srcVolumeBitmap;
+		m_srcVolumeBitmap = NULL;
+	}
 }
 
 
@@ -35,11 +86,21 @@ void TestClient::Run() {
 	Logger::Debug2(_T("Starting up..."));
 
 	if (IncludeFileTest()) {
-		if (!OpenSourceFile()) {
-			return;
+		if (UseSnapshotForFileTest()) {
+			if (!TakeDiskSnapshot()) {
+				return;
+			}
+		} else if (UseRawDiskForFileTest()) {
+			if (!OpenSourceDisk(m_settings.getSourceFile())) {
+				return;
+			}
+		} else {
+			if (!OpenSourceFile()) {
+				return;
+			}
 		}
 	} else {
-		m_dwFileSize = m_settings.getDataLength();
+		m_fileSize = m_settings.getDataLength();
 	}
 
 	if (IncludeNetworkTest()) {
@@ -125,15 +186,15 @@ void TestClient::Run() {
 	_tprintf(_T("Total transfer wall clock time: %0.2lf seconds\n"), (finish - start).Seconds());
 	if (IncludeFileTest()) {
 		_tprintf(_T("Read %0.2lf 10^6 bytes\n"), 
-			static_cast<double>(m_dwTotalBytesRead) / 1000000);
+			static_cast<double>(m_totalBytesRead) / 1000000);
 	}
 	if (IncludeNetworkTest()) {
 		_tprintf(_T("Sent %0.2lf 10^6 bytes\n"),
-			static_cast<double>(m_dwTotalBytesWritten) / 1000000);
+			static_cast<double>(m_totalBytesWritten) / 1000000);
 	}
 	_tprintf(_T("Total throughput: %0.2lf 10^6 Bytes/second (%0.2lf 10^6 bits/second)\n"),
-		(static_cast<double>(MAX(m_dwTotalBytesRead, m_dwTotalBytesWritten)) / 1000000) / (finish - start).Seconds(),
-		(static_cast<double>(MAX(m_dwTotalBytesRead, m_dwTotalBytesWritten)) / 1000000 * 8) / (finish - start).Seconds());
+		(static_cast<double>(MAX(m_totalBytesRead, m_totalBytesWritten)) / 1000000) / (finish - start).Seconds(),
+		(static_cast<double>(MAX(m_totalBytesRead, m_totalBytesWritten)) / 1000000 * 8) / (finish - start).Seconds());
 }
 
 bool TestClient::OpenSourceFile() {
@@ -151,9 +212,16 @@ bool TestClient::OpenSourceFile() {
 		return false;
 	}
 
-	m_dwFileSize = ::GetFileSize(m_file, NULL);
-	if (m_dwFileSize == INVALID_FILE_SIZE) {
-		Logger::ErrorWin32(::GetLastError(), _T("Failed to query size for source file '%s'"), m_settings.getSourceFile().c_str());
+	DWORD sizeHigh = 0;
+	m_fileSize = ::GetFileSize(m_file, &sizeHigh);
+	if (m_fileSize == INVALID_FILE_SIZE) {
+		Logger::ErrorWin32(::GetLastError(), _T("Failed to get size of source file '%s'"), m_settings.getSourceFile().c_str());
+		return false;
+	}
+
+	if (sizeHigh) {
+		Logger::Error(_T("The source file '%s' is larger than 4GB, and cannot be used for this test"),
+			m_settings.getSourceFile().c_str());
 		return false;
 	}
 
@@ -164,6 +232,214 @@ bool TestClient::OpenSourceFile() {
 
 	Logger::Debug1(_T("Source file %s opened successfully"), 
 		m_settings.getSourceFile().c_str());
+
+	return true;
+}
+
+bool TestClient::OpenSourceDisk(const tstring& volumeName) {
+	m_file = ::CreateFile(volumeName.c_str(),
+                                    GENERIC_READ,
+                                    FILE_SHARE_READ|FILE_SHARE_WRITE,
+                                    NULL,
+                                    OPEN_EXISTING,
+                                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN,
+                                    NULL);
+	if (m_file == INVALID_HANDLE_VALUE) {
+		Logger::ErrorWin32(::GetLastError(),
+			_T("Failed to open source volume '%s'"),
+			volumeName.c_str());
+		return false;
+	}
+	
+	NTFS_VOLUME_DATA_BUFFER ntfsInfo = {0};
+    DWORD cbDontCare;
+	DWORD status = ::DeviceIoControl (
+                    m_file,
+                    FSCTL_GET_NTFS_VOLUME_DATA,
+                    NULL,
+                    0,
+                    &ntfsInfo,
+                    sizeof(NTFS_VOLUME_DATA_BUFFER),
+                    &cbDontCare,
+                    NULL);
+    if (!status)
+    {
+		Logger::ErrorWin32(::GetLastError(), 
+			_T("Failed to get size of source volume '%s'"), 
+			volumeName.c_str());
+		return false;
+    }
+
+	m_totalClusters = ntfsInfo.TotalClusters.QuadPart;
+	m_freeClusters = ntfsInfo.FreeClusters.QuadPart;
+	m_bytesPerCluster = ntfsInfo.BytesPerCluster;
+
+	//Technically the 'size' of this file is the total clusters times bytes
+	//per cluster, but since we're only transmitting the allocated clusters,
+	//report the size as allocated clsuters only
+	m_fileSize = (m_totalClusters-m_freeClusters) * m_bytesPerCluster;
+
+	if (m_settings.getChunkSize() < ntfsInfo.BytesPerCluster ||
+		(m_settings.getChunkSize() % ntfsInfo.BytesPerCluster) != 0) {
+		Logger::Error(_T("The chunk size must be an even multiple of the volume cluster size, which is %d bytes"),
+			ntfsInfo.BytesPerCluster);
+	}
+
+	// Get the volume bitmap
+	if (!GetVolumeBitmap(volumeName)) {
+		return false;
+	}
+	
+	//Associate the file with the IOCP
+	if (!m_iocp.AssociateHandle(m_file)) {
+		return false;
+	}
+
+	Logger::Debug1(_T("Source volume snapshot '%s' opened successfully"),
+		volumeName.c_str());
+
+	return true;
+}
+
+bool TestClient::TakeDiskSnapshot() {
+    CHECK_HRESULT(_T("CoInitialize"), ::CoInitialize(NULL)); 
+    CHECK_HRESULT(_T("CoInitializeSecurity"), 
+        ::CoInitializeSecurity(
+        NULL, 
+        -1, 
+        NULL, 
+        NULL, 
+        RPC_C_AUTHN_LEVEL_PKT_PRIVACY, 
+        RPC_C_IMP_LEVEL_IDENTIFY, 
+        NULL, 
+        EOAC_NONE, 
+        NULL)); 
+
+	Logger::Debug1(_T("Preparing to take snapshot of volume '%s'"),
+		m_settings.getSourceFile().c_str());
+
+	CHECK_HRESULT(_T("CreateVssBackupComponents"), ::CreateVssBackupComponents(&m_components));
+
+	CHECK_HRESULT(_T("m_components->InitializeForBackup"), m_components->InitializeForBackup());
+
+    CComPtr<IVssAsync> pWriterMetadataStatus; 
+
+    CHECK_HRESULT(_T("m_components->GatherWriterMetadata"), m_components->GatherWriterMetadata(&pWriterMetadataStatus)); 
+
+    CHECK_HRESULT(_T("pWriterMetadataStatus->Wait"), pWriterMetadataStatus->Wait()); 
+
+    HRESULT hrGatherStatus; 
+    CHECK_HRESULT(_T("pWriterMetadataStatus->QueryStatus"), pWriterMetadataStatus->QueryStatus(&hrGatherStatus, NULL)); 
+
+    if (hrGatherStatus == VSS_S_ASYNC_CANCELLED)
+    {
+		Logger::Error(_T("GatherWriterMetadata was cancelled"));
+		return false;
+    }
+
+    UINT cWriters; 
+    CHECK_HRESULT(_T("m_components->GetWriterMetadataCount"), m_components->GetWriterMetadataCount(&cWriters)); 
+
+    for (UINT i = 0; i < cWriters; ++i)
+    {
+        CComPtr<IVssExamineWriterMetadata> pExamineWriterMetadata; 
+        GUID id; 
+        CHECK_HRESULT(_T("m_components->GetWriterMetadata"), m_components->GetWriterMetadata(i, &id, &pExamineWriterMetadata)); 
+        GUID idInstance; 
+        GUID idWriter; 
+        BSTR bstrWriterName;
+        VSS_USAGE_TYPE usage; 
+        VSS_SOURCE_TYPE source; 
+        CHECK_HRESULT(_T("pExamineWriterMetadata->GetIdentity"), pExamineWriterMetadata->GetIdentity(&idInstance, &idWriter, &bstrWriterName, &usage, &source)); 
+
+        CComBSTR writerName(bstrWriterName); 
+		Logger::Debug2(_T("Writer %d named %s"), i, bstrWriterName);
+    }
+
+    CHECK_HRESULT(_T("m_components->StartSnapshotSet"), m_components->StartSnapshotSet(&m_snapshotSetId));
+
+    WCHAR wszVolumePathName[MAX_PATH]; 
+    BOOL bWorked = ::GetVolumePathName(m_settings.getSourceFile().c_str(), wszVolumePathName, MAX_PATH); 
+
+    if (!bWorked)
+    {
+        DWORD error = ::GetLastError(); 
+		Logger::ErrorWin32(error, _T("GetVolumePathName for '%s' failed"),
+			m_settings.getSourceFile().c_str());
+
+		return false;
+    }
+
+    GUID snapshotId; 
+    CHECK_HRESULT(_T("m_components->AddToSnapshotSet"), m_components->AddToSnapshotSet(wszVolumePathName, GUID_NULL, &snapshotId)); 
+
+    CHECK_HRESULT(_T("m_components->SetBackupState"), m_components->SetBackupState(FALSE, FALSE, VSS_BT_FULL, FALSE)); 
+
+    CComPtr<IVssAsync> pPrepareForBackupResults; 
+    CHECK_HRESULT(_T("m_components->PrepareForBackup"), m_components->PrepareForBackup(&pPrepareForBackupResults)); 
+
+    CHECK_HRESULT(_T("pPrepareForBackupResults->Wait"), pPrepareForBackupResults->Wait()); 
+
+    HRESULT hrPrepareForBackupResults; 
+    CHECK_HRESULT(_T("pPrepareForBackupResults->QueryStatus"), pPrepareForBackupResults->QueryStatus(&hrPrepareForBackupResults, NULL)); 
+
+    if (hrPrepareForBackupResults != VSS_S_ASYNC_FINISHED)
+    {
+		Logger::ErrorWin32(hrPrepareForBackupResults, _T("Prepare for backup failed.")); 
+    }
+
+
+	Logger::Debug1(_T("Taking snapshot of volume '%s'"),
+		m_settings.getSourceFile().c_str());
+
+    CComPtr<IVssAsync> pDoSnapshotSetResults;
+    CHECK_HRESULT(_T("m_components->DoSnapshotSet"), m_components->DoSnapshotSet(&pDoSnapshotSetResults)); 
+
+    CHECK_HRESULT(_T("pDoSnapshotSetResults->Wait"), pDoSnapshotSetResults->Wait());
+
+    HRESULT hrDoSnapshotSetResults; 
+    CHECK_HRESULT(_T("pDoSnapshotSetResults->QueryStatus"), pDoSnapshotSetResults->QueryStatus(&hrDoSnapshotSetResults, NULL)); 
+
+    if (hrDoSnapshotSetResults != VSS_S_ASYNC_FINISHED)
+    {
+		Logger::ErrorWin32(hrDoSnapshotSetResults, _T("DoSnapshotSet failed.")); 
+    }
+
+    VSS_SNAPSHOT_PROP snapshotProperties; 
+    CHECK_HRESULT(_T("m_components->GetSnapshotProperties"), m_components->GetSnapshotProperties(snapshotId, &snapshotProperties));
+
+	Logger::Debug1(_T("Snapshot of volume '%s' complete.  Snapshot device is '%s'"),
+		m_settings.getSourceFile().c_str(),
+		snapshotProperties.m_pwszSnapshotDeviceObject);
+
+	return OpenSourceDisk(snapshotProperties.m_pwszSnapshotDeviceObject);
+}
+
+bool TestClient::DeleteDiskSnapshot() {
+	if (!m_components) {
+		return true;
+	}
+	
+    CComPtr<IVssAsync> pBackupCompleteResults; 
+	HRESULT hr = m_components->BackupComplete(&pBackupCompleteResults);
+	if (FAILED(hr)) {
+		Logger::ErrorWin32(hr, TEXT("m_components->BackupComplete failed")); 
+	}
+
+    HRESULT hrBackupCompleteResults; 
+    hr = pBackupCompleteResults->QueryStatus(&hrBackupCompleteResults, NULL); 
+	if (FAILED(hr)) {
+		Logger::ErrorWin32(hr, TEXT("pBackupCompleteResults->QueryStatus failed")); 
+	} else if (hrBackupCompleteResults != VSS_S_ASYNC_FINISHED)
+    {
+		Logger::ErrorWin32(hrBackupCompleteResults, TEXT("Completion of backup failed.")); 
+    }
+
+	LONG ldontcare;
+	VSS_ID pdontcare;
+	m_components->DeleteSnapshots(m_snapshotSetId, VSS_OBJECT_SNAPSHOT_SET, TRUE, &ldontcare, &pdontcare);
+
+	m_components.Release();
 
 	return true;
 }
@@ -235,9 +511,9 @@ bool TestClient::ConnectToServer() {
 
 
 bool TestClient::PostFileRead() {
-	Logger::Debug2(_T("Posting file read at offset %d"), m_dwNextReadOffset);
+	Logger::Debug2(_T("Posting file read at offset %I64d"), m_nextReadOffset);
 
-	AsyncIo* io = new AsyncIo(m_dwNextReadOffset, m_settings.getChunkSize());
+	AsyncIo* io = new AsyncIo(m_nextReadOffset, m_settings.getChunkSize());
 	io->m_dwCookie = COOKIE_FILE_READ;
 	io->m_dwBufLength = m_settings.getChunkSize();
 
@@ -248,7 +524,17 @@ bool TestClient::PostFileRead() {
 		return false;
 	}
 
-	m_dwNextReadOffset += m_settings.getChunkSize();
+	if (ReadingFromDisk()) {
+		//Get the next read offset from the pre-computed list of allocated chunks
+		if (m_allocatedChunks.size()) {
+			m_nextReadOffset = m_allocatedChunks.back();
+			m_allocatedChunks.pop_back();
+		} else {
+			Logger::Debug2(_T("No more allocated clusters to read; using current value"));
+		}
+	} else {
+		m_nextReadOffset += m_settings.getChunkSize();
+	}
 	m_outstandingReads++;
 
 	Logger::Debug2(_T("Read operation posted"));
@@ -310,7 +596,7 @@ bool TestClient::PostSocketWrite(AsyncIo* srcIo) {
 	}
 
 	m_outstandingWrites++;
-	m_dwTotalBytesQueuedForWrite += srcIo->m_dwBufLength;
+	m_totalBytesQueuedForWrite += srcIo->m_dwBufLength;
 
 	return true;
 }
@@ -320,7 +606,7 @@ bool TestClient::ProcessFileRead(AsyncIo* io) {
 		io->m_dwBytesXfered);
 	//File read completed.  Update counters and send to socket
 	m_outstandingReads--;
-	m_dwTotalBytesRead += io->m_dwBytesXfered;
+	m_totalBytesRead += io->m_dwBytesXfered;
 	
 	if (IncludeNetworkTest()) {
 		//Write this back out to the socket
@@ -349,10 +635,10 @@ bool TestClient::ProcessSocketWrite(AsyncIo* io) {
 	Logger::Debug2(_T("Processing completed socket write: %d bytes written"),
 		io->m_dwBytesXfered);
 	//Update counters
-	m_dwTotalBytesWritten += io->m_dwBytesXfered;
+	m_totalBytesWritten += io->m_dwBytesXfered;
 	m_outstandingWrites--;
 
-	if (!IncludeFileTest() && !IsSocketDone() && m_dwTotalBytesQueuedForWrite < m_dwFileSize) {
+	if (!IncludeFileTest() && !IsSocketDone() && m_totalBytesQueuedForWrite < m_fileSize) {
 		//No file reads to prompt socket writes, so post another socket write now
 		if (!PostSocketWrite(io)) {
 			delete io;
@@ -373,9 +659,9 @@ bool TestClient::ProcessTransmitFile(AsyncIo* io) {
 	m_outstandingReads--;
 	m_outstandingWrites--;
 
-	m_dwTotalBytesRead = io->m_dwBytesXfered;
-	m_dwTotalBytesWritten = io->m_dwBytesXfered;
-	m_dwNextReadOffset = m_dwFileSize;
+	m_totalBytesRead = io->m_dwBytesXfered;
+	m_totalBytesWritten = io->m_dwBytesXfered;
+	m_nextReadOffset = m_fileSize;
 
 	delete io;
 
@@ -434,6 +720,94 @@ bool TestClient::GetTransmitPacketsPointer() {
 		Logger::ErrorWin32(::WSAGetLastError(), _T("Unable to get function pointer for TransmitPackets"));
 		return false;
 	}
+
+	return true;
+}
+
+bool TestClient::GetVolumeBitmap(const tstring& volumeName) {
+    STARTING_LCN_INPUT_BUFFER lcn;
+    BOOL ok;
+    DWORD cbDontCare;
+
+	ULONG bitmapBufferSize = 65536;
+
+	do {        
+		if (m_srcVolumeBitmap) {
+			delete[] m_srcVolumeBitmap;
+		}
+
+		m_srcVolumeBitmap = reinterpret_cast<VOLUME_BITMAP_BUFFER*>(new char[bitmapBufferSize]);
+
+		lcn.StartingLcn.QuadPart = 0;
+		ok = ::DeviceIoControl (
+						m_file,
+						FSCTL_GET_VOLUME_BITMAP,
+						&lcn,
+						sizeof(STARTING_LCN_INPUT_BUFFER),
+						m_srcVolumeBitmap,
+						bitmapBufferSize,
+						&cbDontCare,
+						NULL);
+
+		if (!ok) {
+			if (::GetLastError() == ERROR_MORE_DATA) {
+				//Need a bigger buffer
+				bitmapBufferSize <<= 1;
+			} else {
+				Logger::ErrorWin32(::GetLastError(),
+					_T("Error getting volume bitmap for source volume '%s'"),
+					volumeName.c_str());
+				return false;
+			}
+		}
+	} while (!ok);
+
+#define BITS_IN_ULONG	((sizeof(ULONG)*8))
+
+	if (m_srcVolumeBitmap->BitmapSize.QuadPart % BITS_IN_ULONG != 0) {
+		m_srcVolumeBitmap->BitmapSize.QuadPart += BITS_IN_ULONG - (m_srcVolumeBitmap->BitmapSize.QuadPart % BITS_IN_ULONG);
+	}
+
+	if (m_srcVolumeBitmap->BitmapSize.HighPart) {
+		Logger::Error(_T("Source volume bitmap for source volume '%s' is larger than 4Gbits, and cannot be used for this test"),
+			volumeName.c_str());
+		return false;
+	}
+
+	RTL_BITMAP bitmap = {0};
+	::RtlInitializeBitMap (
+				&bitmap,
+				reinterpret_cast<ULONG*>(m_srcVolumeBitmap->Buffer),
+				m_srcVolumeBitmap->BitmapSize.LowPart);
+
+	//Build a list of allocated clusters from the volume bitmap
+	unsigned __int64 totalChunks = (m_totalClusters * m_bytesPerCluster + (m_settings.getChunkSize()-1)) / m_settings.getChunkSize();
+
+	for (unsigned __int64 chunk = 0; chunk < totalChunks; chunk++) {
+		//Compute the range of clusters covered by this chunk, and check them for availability
+		unsigned __int64 byteOffset = chunk * m_settings.getChunkSize();
+
+		unsigned __int64 startCluster = byteOffset / m_bytesPerCluster;
+		unsigned __int64 endCluster = (byteOffset + m_settings.getChunkSize()) / m_bytesPerCluster;
+
+		ULONG bitOffset = static_cast<ULONG>(startCluster);
+		ULONG bitCount = static_cast<ULONG>(endCluster - startCluster + 1);
+
+		if (!::RtlAreBitsClear(&bitmap, bitOffset, bitCount)) {
+			m_allocatedChunks.push_back(byteOffset);
+		}
+	}
+
+	//Reverse the list, so it starts with lower numbers
+	std::reverse(m_allocatedChunks.begin(), m_allocatedChunks.end());
+
+	if (m_fileSize == 0) {
+		m_fileSize = m_settings.getChunkSize();
+		m_allocatedChunks.push_back(0);
+	}
+
+	m_nextReadOffset = m_allocatedChunks.back();
+	m_allocatedChunks.pop_back();
 
 	return true;
 }

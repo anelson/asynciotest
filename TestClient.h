@@ -1,5 +1,12 @@
 #pragma once
 
+#include <vss.h>
+#include <vswriter.h>
+#include <vsbackup.h>
+#include <winioctl.h>
+
+#include <vector>
+
 #include "IoController.h"
 #include "Settings.h"
 
@@ -14,12 +21,24 @@ public:
 private:
 	SOCKET m_socket;
 	HANDLE m_file;
-	DWORD m_dwFileSize;
-	DWORD m_dwNextReadOffset;
-	DWORD m_dwTotalBytesQueuedForWrite;
+	unsigned __int64 m_fileSize;
+	unsigned __int64 m_nextReadOffset;
+	unsigned __int64 m_totalBytesQueuedForWrite;
 	LPFN_TRANSMITPACKETS m_pfnTransmitPackets;
 
+	// Snapshot-specific stuff
+	CComPtr<IVssBackupComponents> m_components;
+	GUID m_snapshotSetId;
+
+	// Snapshot or raw disk specific stuff
+	VOLUME_BITMAP_BUFFER* m_srcVolumeBitmap;
+	unsigned __int64 m_totalClusters, m_freeClusters, m_bytesPerCluster;
+	std::vector<unsigned __int64> m_allocatedChunks;
+
 	bool OpenSourceFile();
+	bool OpenSourceDisk(const tstring& volumeName);
+	bool TakeDiskSnapshot();
+	bool DeleteDiskSnapshot();
 	bool ConnectToServer();
 
 	bool PostFileRead();
@@ -33,12 +52,17 @@ private:
 	bool ProcessTransmitFile(AsyncIo* io);
 
 	bool GetTransmitPacketsPointer();
+	bool GetVolumeBitmap(const tstring& volumeName);
 
 	bool IsFileEof() {
-		return !IncludeFileTest() || (m_dwNextReadOffset >= m_dwFileSize);
+		if (UseFileForFileTest()) {
+			return !IncludeFileTest() || (m_nextReadOffset >= m_fileSize);
+		} else {
+			return m_allocatedChunks.size() == 0;
+		}
 	}
 	bool IsSocketDone() {
-		return !IncludeNetworkTest() || (m_dwTotalBytesWritten >= m_dwFileSize);
+		return !IncludeNetworkTest() || (m_totalBytesWritten >= m_fileSize);
 	}
 
 	bool UseTransmitFile() {

@@ -3,8 +3,8 @@
 
 IoController::IoController(Settings& settings) : m_settings(settings)
 {
-	m_dwTotalBytesWritten = 0;
-	m_dwTotalBytesRead = 0;
+	m_totalBytesWritten = 0;
+	m_totalBytesRead = 0;
 	m_outstandingReads = 0;
 	m_outstandingWrites = 0;
 }

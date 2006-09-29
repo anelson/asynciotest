@@ -7,6 +7,7 @@
 
 #define WIN32_LEAN_AND_MEAN		// Exclude rarely-used stuff from Windows headers
 #include <windows.h>
+#include <winbase.h>
 #include <stdio.h>
 #include <tchar.h>
 #include <string>
@@ -14,6 +15,8 @@
 #include <winsock2.h>
 #include <mswsock.h>
 #include <Ws2tcpip.h>
+
+#include <atlbase.h>
 
 #if _UNICODE
 typedef std::wstring tstring;
@@ -35,3 +38,4 @@ typedef std::string tstring;
 
 #define new MYDEBUG_NEW
 #endif
+
