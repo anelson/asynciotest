@@ -212,26 +212,22 @@ bool TestClient::OpenSourceFile() {
 		return false;
 	}
 
-	DWORD sizeHigh = 0;
-	m_fileSize = ::GetFileSize(m_file, &sizeHigh);
-	if (m_fileSize == INVALID_FILE_SIZE) {
+	LARGE_INTEGER fileSize;
+	if (!::GetFileSizeEx(m_file, &fileSize)) {
 		Logger::ErrorWin32(::GetLastError(), _T("Failed to get size of source file '%s'"), m_settings.getSourceFile().c_str());
 		return false;
 	}
 
-	if (sizeHigh) {
-		Logger::Error(_T("The source file '%s' is larger than 4GB, and cannot be used for this test"),
-			m_settings.getSourceFile().c_str());
-		return false;
-	}
+	m_fileSize = fileSize.QuadPart;
 
 	//Associate the file with the IOCP
 	if (!m_iocp.AssociateHandle(m_file)) {
 		return false;
 	}
 
-	Logger::Debug1(_T("Source file %s opened successfully"), 
-		m_settings.getSourceFile().c_str());
+	Logger::Debug1(_T("Source file %s opened successfully.  Source is %I64d bytes large"), 
+		m_settings.getSourceFile().c_str(),
+		m_fileSize);
 
 	return true;
 }

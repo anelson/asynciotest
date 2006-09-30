@@ -189,7 +189,7 @@ bool TestServer::OpenOutputFile() {
 		return false;
 	}
 
-	m_dwNextWriteOffset = 0;
+	m_nextWriteOffset = 0;
 
 	return true;
 }
@@ -315,7 +315,10 @@ bool TestServer::PostSocketRead() {
 bool TestServer::PostFileWrite(AsyncIo* io) {
 	io->m_dwCookie = COOKIE_FILE_WRITE;
 	io->m_dwBufLength = io->m_dwBytesXfered;
-	io->m_ol.Offset = m_dwNextWriteOffset;
+	ULARGE_INTEGER offset;
+	offset.QuadPart = m_nextWriteOffset;
+	io->m_ol.Offset = offset.LowPart;
+	io->m_ol.OffsetHigh = offset.HighPart;
 
 	if (!::WriteFile(m_targetFile, 
 		io->m_buffer,
@@ -329,7 +332,7 @@ bool TestServer::PostFileWrite(AsyncIo* io) {
 	}
 
 	m_outstandingWrites++;
-	m_dwNextWriteOffset += io->m_dwBufLength;
+	m_nextWriteOffset += io->m_dwBufLength;
 
 	return true;
 }

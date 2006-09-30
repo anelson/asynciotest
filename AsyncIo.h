@@ -22,7 +22,7 @@ struct AsyncIo
 public:
 	AsyncIo(void);
 	AsyncIo(DWORD dwBufSize);
-	AsyncIo(DWORD dwOffset, DWORD dwBufSize);
+	AsyncIo(unsigned __int64 offset, DWORD dwBufSize);
 
 	~AsyncIo(void);
 

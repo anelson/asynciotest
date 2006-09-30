@@ -16,7 +16,7 @@ private:
 	SOCKET m_serverSocket;
 	SOCKET m_clientSocket;
 	HANDLE m_targetFile;
-	DWORD m_dwNextWriteOffset;
+	unsigned __int64 m_nextWriteOffset;
 
 	bool BindSocket();
 	bool AcceptConnection();

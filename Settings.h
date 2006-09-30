@@ -92,11 +92,11 @@ public:
 				break;
 
 			case _T('b'):
-				m_tcpBufSize = ParseByteCount(optarg);
+				m_tcpBufSize = static_cast<DWORD>(ParseByteCount(optarg));
 				break;
 
 			case _T('k'):
-				m_chunkSize = ParseByteCount(optarg);
+				m_chunkSize = static_cast<DWORD>(ParseByteCount(optarg));
 				break;
 
 			case _T('o'):
@@ -176,7 +176,7 @@ public:
   Disk I/O Source: %s\n\
   Chunk size: %d\n\
   Op Count: %d\n\
-  Data length: %d\n\
+  Data length: %I64d\n\
   TCP buf size: %d\n\
 "),
 		m_mode == Client ? _T("Client") : _T("Server"),
@@ -219,7 +219,7 @@ Options:\n\
 	const tstring& getTargetHost() {return m_targetHost;}
 	const tstring& getSourceFile() {return m_sourceFile;}
 	UINT32 getPort() {return m_port;}
-	UINT32 getDataLength() {return m_dataLength;}
+	unsigned __int64 getDataLength() {return m_dataLength;}
 	DWORD getChunkSize() {return m_chunkSize;}
 	int getOpLength() {return m_opLength;}
 	int getTcpBufSize() {return m_tcpBufSize;}
@@ -232,13 +232,13 @@ private:
 	tstring m_targetHost;
 	tstring m_sourceFile;
 	UINT32 m_port;
-	DWORD m_dataLength;
+	unsigned __int64 m_dataLength;
 	DWORD m_chunkSize;
 	int m_opLength;
 	int m_tcpBufSize;
 	bool m_useTransmitFunc;
 
-	DWORD ParseByteCount(LPCTSTR count) {
+	unsigned __int64 ParseByteCount(LPCTSTR count) {
 		//Look for a decimal number, optionally followed by a scale indicator of K, M, or G
 		return byte_atoi(count);
 	}
@@ -251,7 +251,7 @@ private:
 	static const long kmega_to_Unit = 1000 * 1000;
 	static const long kgiga_to_Unit = 1000 * 1000 * 1000;
 
-	int byte_atoi( const TCHAR *inString ) {
+	unsigned __int64 byte_atoi( const TCHAR *inString ) {
 		double theNum = 0;
 		TCHAR suffix = '\0';
 
@@ -268,6 +268,6 @@ private:
 			case 'k':  theNum *= kkilo_to_Unit;  break;
 			default: break;
 		}
-		return (int) theNum;
+		return (unsigned __int64) theNum;
 	} /* end byte_atof */
 };

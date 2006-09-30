@@ -11,13 +11,15 @@ AsyncIo::AsyncIo(DWORD dwBufSize) {
 	AllocateBuffer(dwBufSize);
 }
 
-AsyncIo::AsyncIo(DWORD dwOffset, DWORD dwBufSize)
+AsyncIo::AsyncIo(unsigned __int64 offset, DWORD dwBufSize)
 {
 	Initialize();
 	AllocateBuffer(dwBufSize);
 
-	m_ol.OffsetHigh = 0;
-	m_ol.Offset = dwOffset;
+	ULARGE_INTEGER ulOffset;
+	ulOffset.QuadPart = offset;
+	m_ol.OffsetHigh = ulOffset.HighPart;
+	m_ol.Offset = ulOffset.LowPart;
 }
 
 AsyncIo::~AsyncIo(void)
